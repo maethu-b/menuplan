@@ -1,6 +1,6 @@
 /* Service Worker: speichert die App-Dateien, damit sie im Laden auch ohne Netz startet.
    Bei jeder Änderung an den App-Dateien VERSION hochzählen, sonst sieht das Handy die alte Fassung. */
-const VERSION = 'menuplan-v1.1.0';
+const VERSION = 'menuplan-v1.3.1';
 const FILES = [
   './', './index.html', './styles.css', './data.js', './logic.js', './app.js', './manifest.webmanifest',
   './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png'
@@ -22,7 +22,7 @@ self.addEventListener('fetch', function (e) {
   e.respondWith(
     fetch(e.request).then(function (res) {
       const copy = res.clone();
-      caches.open(VERSION).then(function (c) { c.put(e.request, copy); });
+      caches.open(VERSION).then(function (c) { return c.put(e.request, copy); }).catch(function () { /* nicht speicherbar */ });
       return res;
     }).catch(function () {
       return caches.match(e.request, { ignoreSearch: true }).then(function (r) { return r || caches.match('./index.html'); });

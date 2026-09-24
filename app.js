@@ -115,6 +115,7 @@
   function closeModal(fromPop) {
     if (!modalOpen) return;
     modalOpen = false; modal.hidden = true; $('#modalBody').innerHTML = ''; ui.edit = null;
+    if (typeof freeOcr === 'function' && (ui.photo || ui.ocrWorker)) freeOcr();
     if (!fromPop && history.state && history.state.modal) history.back();
   }
   window.addEventListener('popstate', function () { if (modalOpen) closeModal(true); });
@@ -173,8 +174,9 @@
 
   function renderRecipes() {
     const tags = allTags();
-    let h = '<div class="row" style="margin-bottom:10px"><input type="search" id="recSearch" placeholder="Rezept oder Zutat suchen" value="' + esc(ui.search) + '">' +
-      '<button class="btn" data-a="pasteRecipe">Einfügen</button><button class="btn primary" data-a="newRecipe">+ Neu</button></div>';
+    let h = '<input type="search" id="recSearch" placeholder="Rezept oder Zutat suchen" value="' + esc(ui.search) + '" style="margin-bottom:8px">' +
+      '<div class="btn-row"><button class="btn" data-a="photoRecipe">Foto</button><button class="btn" data-a="pasteRecipe">Einfügen</button>' +
+      '<button class="btn primary" data-a="newRecipe">+ Neu</button></div>';
     if (tags.length) {
       h += '<div class="chips" style="margin-bottom:12px">' + tags.map(function (t) {
         return '<button class="chip' + (ui.tagFilter.indexOf(t) >= 0 ? ' on' : '') + '" data-a="recTag" data-tag="' + esc(t) + '">' + esc(t) + '</button>';
@@ -405,7 +407,7 @@
       '<div class="btn-row"><button class="btn" data-a="export">Backup exportieren</button><button class="btn" data-a="importBtn">Backup importieren</button></div>' +
       '<input type="file" id="importFile" accept="application/json,.json" hidden>' +
       '<div class="btn-row"><button class="btn soft" data-a="samples">Beispielrezepte laden</button><button class="btn danger" data-a="wipe">Alle Daten löschen</button></div>' +
-      '<p class="muted">Menüplan Version 1.1 &middot; ' + state.recipes.length + ' Rezepte</p>';
+      '<p class="muted">Menüplan Version 1.3 &middot; ' + state.recipes.length + ' Rezepte</p>';
     openModal('Einstellungen', h);
   }
   function catOrderHtml() {
@@ -465,6 +467,266 @@
       editRecipe(null, draft);
       toast('Prüfen und speichern');
     }
+  }
+
+  // ---------- Rezept per Foto (Texterkennung Tesseract, läuft auf dem Handy) ----------
+  // Ablauf: Foto -> Lage automatisch prüfen -> Rahmen ziehen -> als Titel, Zutaten oder Zubereitung erkennen
+  const TESS_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@6.0.1/dist/tesseract.min.js';
+  let tessLoading = null;
+  let ocrLog = null;
+  function loadTesseract() {
+    if (window.Tesseract) return Promise.resolve(window.Tesseract);
+    if (tessLoading) return tessLoading;
+    tessLoading = new Promise(function (resolve, reject) {
+      const sc = document.createElement('script');
+      sc.src = TESS_URL;
+      sc.onload = function () { resolve(window.Tesseract); };
+      sc.onerror = function () { tessLoading = null; reject(new Error('laden')); };
+      document.head.appendChild(sc);
+    });
+    return tessLoading;
+  }
+  async function getWorker() {
+    if (ui.ocrWorker) return ui.ocrWorker;
+    ocrProgress('Texterkennung wird geladen (beim ersten Mal einige MB) ...', 0.05);
+    const T = await loadTesseract();
+    ui.ocrWorker = await T.createWorker('deu', 1, { logger: function (m) { if (ocrLog) ocrLog(m); } });
+    return ui.ocrWorker;
+  }
+  function freeOcr() {
+    if (ui.ocrWorker) { try { ui.ocrWorker.terminate(); } catch (e) { /* egal */ } }
+    ui.ocrWorker = null; ui.photo = null;
+  }
+
+  function newCanvas(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
+  async function loadPhoto(file) {
+    let img;
+    try { img = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
+    catch (e) {
+      img = await new Promise(function (res, rej) {
+        const i = new Image(); i.onload = function () { res(i); }; i.onerror = rej; i.src = URL.createObjectURL(file);
+      });
+    }
+    const scale = Math.min(1, 3000 / Math.max(img.width, img.height));
+    const cv = newCanvas(Math.round(img.width * scale), Math.round(img.height * scale));
+    const ctx = cv.getContext('2d', { willReadFrequently: true });
+    ctx.filter = 'grayscale(1)';
+    ctx.drawImage(img, 0, 0, cv.width, cv.height);
+    return cv;
+  }
+  function rotateCanvas(src, deg) {
+    if (!deg) return src;
+    const quarter = deg % 180 !== 0;
+    const cv = newCanvas(quarter ? src.height : src.width, quarter ? src.width : src.height);
+    const ctx = cv.getContext('2d');
+    ctx.translate(cv.width / 2, cv.height / 2);
+    ctx.rotate(deg * Math.PI / 180);
+    ctx.drawImage(src, -src.width / 2, -src.height / 2);
+    return cv;
+  }
+  function scaledCopy(src, maxSide) {
+    const sc = Math.min(1, maxSide / Math.max(src.width, src.height));
+    const cv = newCanvas(Math.round(src.width * sc), Math.round(src.height * sc));
+    cv.getContext('2d').drawImage(src, 0, 0, cv.width, cv.height);
+    return cv;
+  }
+  // Ausschnitt mit weissem Rand. Kontrast: dunkelste Stellen (Schrift) -> schwarz, Papier -> weiss.
+  // Schwellen aus dem Ausschnitt selbst: 0,05 % (Schrift) und 90 % (Papier), damit auch wenig Text nicht verloren geht.
+  function cropForOcr(src, r) {
+    r = r || { x: 0, y: 0, w: src.width, h: src.height };
+    const w = Math.max(1, Math.round(r.w)), h = Math.max(1, Math.round(r.h));
+    const tmp = newCanvas(w, h);
+    const tctx = tmp.getContext('2d', { willReadFrequently: true });
+    tctx.drawImage(src, r.x, r.y, r.w, r.h, 0, 0, w, h);
+    const d = tctx.getImageData(0, 0, w, h), px = d.data;
+    const hist = new Array(256).fill(0);
+    for (let i = 0; i < px.length; i += 4) hist[px[i]]++;
+    const n = px.length / 4;
+    function pct(q) { let acc = 0; for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= n * q) return v; } return 255; }
+    const lo = pct(0.0005), hi = Math.max(lo + 30, pct(0.90));
+    const range = hi - lo;
+    for (let i = 0; i < px.length; i += 4) {
+      const g = Math.max(0, Math.min(255, (px[i] - lo) * 255 / range));
+      px[i] = px[i + 1] = px[i + 2] = g;
+    }
+    tctx.putImageData(d, 0, 0);
+    const pad = 24;
+    const cv = newCanvas(w + 2 * pad, h + 2 * pad);
+    const ctx = cv.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height);
+    ctx.drawImage(tmp, pad, pad);
+    return cv;
+  }
+
+  function ocrProgress(msg, pct) {
+    const b = $('#ocrStatus');
+    if (!b) return;
+    b.innerHTML = msg ? '<div class="muted">' + esc(msg) + '</div>' +
+      (pct != null ? '<div class="progress"><div style="width:' + Math.round(pct * 100) + '%"></div></div>' : '') : '';
+  }
+  function setOcrBusy(busy) {
+    ui.ocrBusy = busy;
+    document.querySelectorAll('#modalBody [data-ocr]').forEach(function (b) { b.disabled = busy; });
+  }
+
+  function openPhotoDialog() {
+    const o = ui.ocr;
+    let h = '<div class="muted" style="margin-bottom:10px">Seite flach hinlegen, gerade von oben fotografieren, gutes Licht. Gedruckte Rezepte klappen gut, Handschrift kaum.</div>';
+    if (!ui.photo) {
+      h += '<div class="btn-row"><button class="btn primary" data-ocr="1" data-a="ocrPick">Foto aufnehmen oder wählen</button></div>';
+    } else {
+      h += '<div class="muted" style="margin-bottom:6px">Mit dem Finger einen <b>Rahmen</b> um einen Teil ziehen, dann antippen, was es ist. Ohne Rahmen gilt das ganze Foto.</div>' +
+        '<canvas id="ocrCanvas" style="width:100%;display:block;touch-action:none;border-radius:10px;border:1px solid var(--line)"></canvas>' +
+        '<div class="btn-row" style="margin-top:8px"><button class="btn soft" data-ocr="1" data-a="ocrRun" data-part="title">Titel</button>' +
+        '<button class="btn soft" data-ocr="1" data-a="ocrRun" data-part="ing">Zutaten</button>' +
+        '<button class="btn soft" data-ocr="1" data-a="ocrRun" data-part="notes">Zubereitung</button></div>' +
+        '<div class="btn-row"><button class="btn small" data-ocr="1" data-a="ocrRun" data-part="auto">Alles automatisch</button>' +
+        '<button class="btn small" data-ocr="1" data-a="ocrRotate">Drehen</button>' +
+        '<button class="btn small" data-ocr="1" data-a="ocrPick">Weiteres Foto</button></div>';
+    }
+    h += '<div id="ocrStatus" style="margin:6px 0"></div>' +
+      '<label class="field"><span>Name</span><input type="text" id="ocrName" value="' + esc(o.name) + '"></label>' +
+      '<label class="field"><span>Personen</span><input type="number" id="ocrServ" min="1" max="30" inputmode="numeric" value="' + esc(o.servings || '') + '"></label>' +
+      '<label class="field"><span>Zutaten, eine pro Zeile</span><textarea id="ocrIng" rows="8">' + esc(o.ing) + '</textarea></label>' +
+      '<label class="field"><span>Zubereitung</span><textarea id="ocrNotes" rows="6">' + esc(o.notes) + '</textarea></label>' +
+      '<div class="btn-row"><button class="btn primary" data-ocr="1" data-a="ocrApply">Als Rezept übernehmen</button></div>';
+    openModal('Rezept per Foto', h);
+    if (ui.photo) setupCropCanvas();
+  }
+
+  function drawCropCanvas() {
+    const cv = $('#ocrCanvas'), ph = ui.photo;
+    if (!cv || !ph) return;
+    const ctx = cv.getContext('2d');
+    ctx.drawImage(ph.view, 0, 0, cv.width, cv.height);
+    const r = ph.rect;
+    if (r && r.w > 4 && r.h > 4) {
+      const k = cv.width / ph.img.width;
+      const x = r.x * k, y = r.y * k, w = r.w * k, hh = r.h * k;
+      ctx.fillStyle = 'rgba(0,0,0,0.45)';
+      ctx.fillRect(0, 0, cv.width, y); ctx.fillRect(0, y + hh, cv.width, cv.height - y - hh);
+      ctx.fillRect(0, y, x, hh); ctx.fillRect(x + w, y, cv.width - x - w, hh);
+      ctx.strokeStyle = '#5cc285'; ctx.lineWidth = Math.max(3, cv.width / 250);
+      ctx.strokeRect(x, y, w, hh);
+    }
+  }
+  function setupCropCanvas() {
+    const cv = $('#ocrCanvas'), ph = ui.photo;
+    const cssW = cv.getBoundingClientRect().width || 340;
+    const dpr = window.devicePixelRatio || 1;
+    cv.width = Math.round(cssW * dpr);
+    cv.height = Math.round(cv.width * ph.img.height / ph.img.width);
+    ph.view = scaledCopy(ph.img, cv.width);
+    drawCropCanvas();
+    let start = null;
+    function toImg(e) {
+      const b = cv.getBoundingClientRect();
+      return { x: Math.max(0, Math.min(1, (e.clientX - b.left) / b.width)) * ph.img.width,
+               y: Math.max(0, Math.min(1, (e.clientY - b.top) / b.height)) * ph.img.height };
+    }
+    cv.addEventListener('pointerdown', function (e) {
+      if (ui.ocrBusy) return;
+      start = toImg(e); ph.rect = null; cv.setPointerCapture(e.pointerId); e.preventDefault();
+    });
+    cv.addEventListener('pointermove', function (e) {
+      if (!start) return;
+      const p = toImg(e);
+      ph.rect = { x: Math.min(start.x, p.x), y: Math.min(start.y, p.y), w: Math.abs(p.x - start.x), h: Math.abs(p.y - start.y) };
+      drawCropCanvas();
+    });
+    function end() {
+      start = null;
+      if (ph.rect && (ph.rect.w < ph.img.width * 0.03 || ph.rect.h < ph.img.height * 0.02)) ph.rect = null; // nur angetippt
+      drawCropCanvas();
+    }
+    cv.addEventListener('pointerup', end);
+    cv.addEventListener('pointercancel', end);
+  }
+
+  // Richtige Lage finden: kleine Probeerkennung in 0°, 90° und 270°, die sicherste gewinnt
+  async function autoOrient(img) {
+    const worker = await getWorker();
+    const small = scaledCopy(img, 1100);
+    async function conf(deg) {
+      const r = await worker.recognize(cropForOcr(rotateCanvas(small, deg)));
+      return (r && r.data && r.data.confidence) || 0;
+    }
+    ocrProgress('Lage des Fotos wird geprüft ...', 0.3);
+    let best = 0, bestConf = await conf(0);
+    if (bestConf >= 60) return 0;
+    for (const deg of [90, 270, 180]) {
+      if (deg === 180 && bestConf >= 45) break;
+      ocrProgress('Lage des Fotos wird geprüft ...', 0.3 + (deg === 90 ? 0.25 : 0.5));
+      const c = await conf(deg);
+      if (c > bestConf + 5) { best = deg; bestConf = c; }
+    }
+    return best;
+  }
+
+  async function handlePhoto(file) {
+    setOcrBusy(true);
+    try {
+      ocrProgress('Foto wird vorbereitet ...', 0.05);
+      const img = await loadPhoto(file);
+      ocrLog = null;
+      const deg = await autoOrient(img);
+      ui.photo = { img: rotateCanvas(img, deg), rect: null };
+      openPhotoDialog();
+      ocrProgress(deg ? 'Foto wurde gedreht. Jetzt einen Rahmen um die Zutaten ziehen und «Zutaten» antippen.' : 'Jetzt einen Rahmen um die Zutaten ziehen und «Zutaten» antippen.');
+    } catch (e) {
+      ocrProgress(navigator.onLine === false ? 'Für die Texterkennung braucht es beim ersten Mal Internet.' : 'Foto konnte nicht gelesen werden. Bitte nochmals versuchen.');
+    } finally { setOcrBusy(false); }
+  }
+
+  function readOcrFields() {
+    const o = ui.ocr;
+    if ($('#ocrName')) {
+      o.name = $('#ocrName').value; o.servings = parseInt($('#ocrServ').value, 10) || null;
+      o.ing = $('#ocrIng').value; o.notes = $('#ocrNotes').value;
+    }
+    return o;
+  }
+  function appendText(a, b) { a = (a || '').replace(/\s+$/, ''); b = (b || '').trim(); return b ? (a ? a + '\n' + b : b) : a; }
+
+  async function runOcrPart(part) {
+    const ph = ui.photo;
+    if (!ph || ui.ocrBusy) return;
+    const o = readOcrFields();
+    setOcrBusy(true);
+    try {
+      const worker = await getWorker();
+      ocrLog = function (m) { if (m.status === 'recognizing text') ocrProgress('Text wird erkannt ...', m.progress || 0); };
+      const res = await worker.recognize(cropForOcr(ph.img, ph.rect));
+      ocrLog = null;
+      const txt = (res && res.data && res.data.text) || '';
+      if (!txt.trim()) { ocrProgress('Kein Text erkannt. Rahmen grosszügiger ziehen oder schärfer fotografieren.'); return; }
+      if (part === 'title') {
+        const t = L.cleanTitleBlock(txt);
+        if (t.name) o.name = t.name;
+        if (t.servings) o.servings = t.servings;
+      } else if (part === 'ing') {
+        const b = L.cleanIngredientBlock(txt);
+        o.ing = appendText(o.ing, b.text);
+        if (b.notes) o.notes = appendText(o.notes, b.notes);
+        if (b.servings && !o.servings) o.servings = b.servings;
+      } else if (part === 'notes') {
+        o.notes = appendText(o.notes, L.cleanNotesBlock(txt));
+      } else {
+        const d = L.parseRecipeText(txt, state.settings.catOverrides);
+        if (!o.name && d.name) o.name = d.name;
+        if (!o.servings && d.servings) o.servings = d.servings;
+        o.ing = appendText(o.ing, d.ingredientsText);
+        o.notes = appendText(o.notes, d.notes);
+      }
+      ph.rect = null;
+      $('#ocrName').value = o.name; $('#ocrServ').value = o.servings || '';
+      $('#ocrIng').value = o.ing; $('#ocrNotes').value = o.notes;
+      drawCropCanvas();
+      const label = { title: 'Titel', ing: 'Zutaten', notes: 'Zubereitung', auto: 'Text' }[part];
+      ocrProgress(label + ' übernommen. Unten prüfen, weiteren Rahmen ziehen oder «Als Rezept übernehmen».');
+    } catch (e) {
+      ocrProgress(navigator.onLine === false ? 'Für die Texterkennung braucht es beim ersten Mal Internet.' : 'Texterkennung fehlgeschlagen. Bitte nochmals versuchen.');
+    } finally { ocrLog = null; setOcrBusy(false); }
   }
 
   // ---------- Bildschirm anlassen beim Einkaufen ----------
@@ -634,6 +896,24 @@
     pasteShop: function () { openPaste('shop'); },
     pasteRecipe: function () { openPaste('recipe'); },
     pasteApply: function () { applyPaste(); },
+    photoRecipe: function () { freeOcr(); ui.ocr = { name: '', servings: null, ing: '', notes: '' }; openPhotoDialog(); },
+    ocrPick: function () { readOcrFields(); $('#photoInput').value = ''; $('#photoInput').click(); },
+    ocrRun: function (el) { runOcrPart(el.dataset.part); },
+    ocrRotate: function () {
+      if (!ui.photo || ui.ocrBusy) return;
+      readOcrFields();
+      ui.photo = { img: rotateCanvas(ui.photo.img, 90), rect: null };
+      openPhotoDialog();
+    },
+    ocrApply: function () {
+      const o = readOcrFields();
+      if (!o.name.trim() && !o.ing.trim()) { toast('Zuerst Titel oder Zutaten erkennen'); return; }
+      const draft = { name: o.name.trim() || 'Rezept vom Foto', servings: o.servings || state.settings.people, tags: [],
+        ingredients: L.parseIngredients(o.ing, state.settings.catOverrides), notes: o.notes.trim(), link: '' };
+      freeOcr();
+      editRecipe(null, draft);
+      toast('Prüfen und speichern');
+    },
     sharePlan: function () { shareText('Wochenplan', L.planToText(state, ui.week)); },
     shareRecipe: function (el) {
       const r = recipesById()[el.dataset.id];
@@ -720,6 +1000,7 @@
     if (t.matches('#edPrev select')) { ui.edit.cats[t.dataset.k] = t.value; ui.edit.changed.add(t.dataset.k); }
     else if (t.id === 'addCat') ui.addCatTouched = true;
     else if (t.id === 'setPeople') { state.settings.people = Math.max(1, parseInt(t.value, 10) || 2); save(); }
+    else if (t.id === 'photoInput' && t.files[0]) { handlePhoto(t.files[0]); }
     else if (t.id === 'importFile' && t.files[0]) {
       const reader = new FileReader();
       reader.onload = function () {

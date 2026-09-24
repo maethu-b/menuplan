@@ -123,7 +123,7 @@
     for (const cat in D.CATEGORY_KEYWORDS) {
       for (const kw of D.CATEGORY_KEYWORDS[cat]) {
         const k = kw.trim();
-        const hit = k.length <= 3 ? words.indexOf(k) >= 0 : n.indexOf(k) >= 0;
+        const hit = k.length <= 3 ? words.some(function (wd) { return wd === k || (wd.length > k.length + 2 && wd.endsWith(k)); }) : n.indexOf(k) >= 0;
         if (hit && k.length > bestLen) { best = cat; bestLen = k.length; }
       }
     }
@@ -155,7 +155,7 @@
     if (fr) return (whole ? whole : '') + fr;
     return String(Math.round(r * 10) / 10).replace('.', ',');
   }
-  const SMALL_UNITS = ['EL', 'TL', 'Msp', 'Prise', 'Zehe', 'Zweig', 'Handvoll', 'Scheibe', 'Tasse', 'mg'];
+  const SMALL_UNITS = ['EL', 'TL', 'KL', 'Msp', 'Prise', 'Zehe', 'Zweig', 'Handvoll', 'Scheibe', 'Tasse', 'mg'];
   function roundForShopping(qty, unit) {
     if (qty == null) return null;
     if (unit === 'g' || unit === 'ml') return Math.ceil(qty / 5 - 1e-9) * 5;
@@ -202,6 +202,11 @@
   }
 
   // ---------- Einkaufsliste ----------
+  // «Knoblauchzehe, gerieben» -> «Knoblauchzehe», «Nori-Blatt (optional)» -> «Nori-Blatt»
+  function shortName(name) {
+    const n = String(name || '').split(/,|\s\(/)[0].trim();
+    return n || String(name || '').trim();
+  }
   function buildShoppingFromPlan(state, days) {
     const byKey = {};
     const recipesById = {};
@@ -213,9 +218,10 @@
         const factor = (meal.servings || r.servings || 1) / (r.servings || 1);
         (r.ingredients || []).forEach(function (ing) {
           const b = toBase(ing.qty != null ? ing.qty * factor : null, ing.unit || '');
-          const key = mergeKey(ing.name) + '|' + b.unit;
+          const nm = shortName(ing.name);
+          const key = mergeKey(nm) + '|' + b.unit;
           if (!byKey[key]) {
-            byKey[key] = { key: key, name: ing.name, qty: null, unit: b.unit, cat: ing.cat || guessCategory(ing.name, state.settings && state.settings.catOverrides), from: [] };
+            byKey[key] = { key: key, name: nm, qty: null, unit: b.unit, cat: ing.cat || guessCategory(ing.name, state.settings && state.settings.catOverrides), from: [] };
           }
           const it = byKey[key];
           if (b.qty != null) it.qty = (it.qty || 0) + b.qty;
@@ -326,39 +332,225 @@
     return lines.join('\n');
   }
 
-  // Gegenstück zu recipeToText, verträgt auch lose getippte Rezepte
+  // Liest geteilte Rezepte, abgetippte Rezepte und Texterkennung von Fotos (Kochbuch, Zeitschrift).
+  // Erkennt Überschriften, wenn es welche gibt, sonst entscheidet die Form der Zeile:
+  // kurze Zeilen mit Menge = Zutat, ganze Sätze = Zubereitung.
+  const RX_ING_HEAD = /^zutaten\b/i;
+  const RX_NOTES_HEAD = /^(zubereitung|so\s+geht'?s|und\s+so\s+geht'?s|anleitung|arbeitsschritte|schritte|vorgehen|notizen)\b\s*:?\s*$/i;
+  const RX_SERVINGS = /(?:f(?:ü|u|ii)r|ergibt|reicht\s+f(?:ü|u)r)\s*(\d+)\s*(?:personen|portionen|pers\b|pers\.)|\(?\b(\d+)\s*(?:personen|portionen)\b\)?/i;
+
+  const RX_QTY_TOKEN = /^(?:\d+(?:[.,]\d+)?|\d*[½¼¾⅓⅔]|\d+\/\d+)$/;
+  const KEEP_SHORT = /^(g|kg|l|dl|cl|ml|EL|TL|KL|°C|Min\.?|Std\.?|cm)[,.]?$/;
+
+  // Typische Lesefehler der Texterkennung bei Mengen korrigieren
+  function fixOcrQuantities(l) {
+    l = l.replace(/^(?:%|Y%|Y2|Yz|Ya|y2|1\/2)\s*(?=\S)/, '½ ');               // ½ wird oft als % gelesen
+    l = l.replace(/^[TIl|](?=\s?(?:EL|TL|KL)\b)/, '1');                        // «TEL» -> «1EL»
+    l = l.replace(/^(\d+)[ı|!]+(?=\s)/, '$1');                            // «1ı Zwiebel»
+    l = l.replace(/^[lI](?=\s+[^\d\s])/, '1');                                // alleinstehendes l/I -> 1
+    l = l.replace(/(^|\s)[TI]EL(?=\s)/g, '$11EL');                              // «TEL» mitten in der Zeile
+    l = l.replace(/^(\d+(?:,\d+)?|½|¼|¾)\s*(EL|TL|KL|dl|cl|ml)(?=[A-ZÄÖÜa-zäöü]{3,})/, '$1 $2 '); // «1ELneutrales»
+    l = l.replace(/^(\d+)\s*[.,]\s*(\d)\b/, '$1,$2');
+    l = l.replace(/^(\d+(?:,\d+)?)\s+[1Il|]\s+(?=[A-ZÄÖÜ])/, '$1 l ');          // «1 1 Bouillon» -> «1 l Bouillon»
+    // «909 1809 Butter» / «409g 809g» : 9 am Ende einer Menge ist meist ein g
+    const tk = l.split(' ');
+    if (tk.length > 2 && /^\d+[9g]g?$/.test(tk[0]) && /^\d+[9g]g?$/.test(tk[1]) && /[9g]$/.test(tk[0] + tk[1])) {
+      for (let i = 0; i < 2; i++) tk[i] = tk[i].replace(/9g$/, 'g').replace(/^(\d+)9$/, '$1g');
+      l = tk.join(' ');
+    }
+    l = l.replace(/^(\d+)9g\b/, '$1g');
+    return l;
+  }
+
+  function cleanOcrLine(raw) {
+    let l = String(raw || '').replace(/\t/g, ' ').replace(/[‘’‚“”„]/g, '').replace(/\s+/g, ' ').trim();
+    l = l.replace(/^[•·▪■□☐–—*+\-»«>]+\s*/, '');
+    l = l.replace(/^(?:[^A-Za-zÄÖÜäöü0-9½¼¾%\s]+\s+)+/, '');                     // «| », «© » vorne weg
+    l = fixOcrQuantities(l);
+    // Fetzen am Anfang und Ende (Nachbarseite, Schatten) entfernen
+    let tk = l.split(' ');
+    while (tk.length > 1 && !/[0-9½¼¾]/.test(tk[0]) && (tk[0].replace(/[^A-Za-zÄÖÜäöüß]/g, '').length <= 1)) tk.shift();
+    while (tk.length > 1) {
+      const t = tk[tk.length - 1];
+      const letters = t.replace(/[^A-Za-zÄÖÜäöüß]/g, '').length;
+      if (KEEP_SHORT.test(t) || letters >= 3 || /^[A-ZÄÖÜ][a-zäöüß][,.)]?$/.test(t) || (/^\d/.test(t) && tk.length <= 2)) break;
+      tk.pop();
+    }
+    l = tk.join(' ');
+    return fixOcrQuantities(l);
+  }
+  // Zeile ohne ein einziges richtiges Wort ist Rauschen
+  function isNoise(l) {
+    return !/[A-Za-zÄÖÜäöüß]{3,}/.test(l) && !/^[\d½¼¾]/.test(l);
+  }
+
+  function wordCount(l) { return l.split(/\s+/).filter(Boolean).length; }
+  function looksLikeSentence(l) {
+    if (/[.!?]$/.test(l) || /[.!?]\s+[A-ZÄÖÜ]/.test(l) || wordCount(l) > 8) return true;
+    if (/^\d+[.)]\s+\S+(\s+\S+){3,}/.test(l)) return true;      // nummerierter Arbeitsschritt
+    const p = parseIngredientLine(l);
+    return !(p && p.qty != null) && wordCount(l) > 6;             // lange Zeile ohne Menge
+  }
+  function looksLikeIngredient(l) {
+    if (!l || looksLikeSentence(l)) return false;
+    const p = parseIngredientLine(l);
+    if (p && p.qty != null) return wordCount(l) <= 8;
+    return wordCount(l) <= 4 && !/:$/.test(l);
+  }
+  function splitPlainIngredients(l) {
+    // «Salz, Pfeffer, Muskat» ohne Mengen in einzelne Zutaten aufteilen
+    if (/\d/.test(l) || l.indexOf(',') < 0) return [l];
+    return l.split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+  }
+  function joinNotes(lines) {
+    const out = [];
+    let cur = '';
+    lines.forEach(function (l) {
+      if (!l) { if (cur) { out.push(cur); cur = ''; } return; }
+      if (/^\d+[.)]\s/.test(l) && cur) { out.push(cur); cur = l; return; }
+      if (!cur) cur = l;
+      else if (/[a-zäöü]-$/.test(cur)) cur = cur.slice(0, -1) + l; // Worttrennung am Zeilenende
+      else cur += ' ' + l;
+    });
+    if (cur) out.push(cur);
+    return out.join('\n\n');
+  }
+
+  // Wörter, mit denen in Tabellen-Rezepten (z.B. Betty Bossi) die Anleitung neben der Zutat beginnt
+  const INSTR_START = /^(in|mit|bis|auf|darauf|darüber|dazu|dazugeben|dazugiessen|beigeben|zugeben|unter|fein|grob|zusammen|alles|nach|von|im|ins|am|zum|zur|kurz|gut|mischen|rühren|verrühren|hacken|schneiden|schälen|waschen|geben|zerlassen|schmelzen)$/i;
+
+  function hasQty(l) { const p = parseIngredientLine(l); return !!(p && p.qty != null); }
+
+  // Zutatenzeilen aufräumen: umbrochene Zeilen zusammenführen, zweite Mengenspalte weglassen,
+  // Anleitungstext neben der Zutat abtrennen (kommt in die Zubereitung)
+  function processIngredientLines(lines) {
+    const merged = [];
+    lines.forEach(function (l) {
+      const prev = merged[merged.length - 1];
+      const opens = prev ? (prev.match(/\(/g) || []).length - (prev.match(/\)/g) || []).length : 0;
+      const prevLast = prev ? prev.split(' ').pop() : '';
+      const continuation = prev && !hasQty(l) && (
+        /^[a-zäöü(]/.test(l) || opens > 0 || /[,(]$/.test(prev) ||
+        (/^[a-zäöü]/.test(prevLast) && !/^\d/.test(prevLast) && hasQty(prev)));
+      if (continuation) merged[merged.length - 1] = prev + ' ' + l;
+      else merged.push(l);
+    });
+    const split = [];
+    merged.forEach(function (l) { if (hasQty(l)) split.push(l); else splitPlainIngredients(l).forEach(function (x) { split.push(x); }); });
+    merged.length = 0; Array.prototype.push.apply(merged, split);
+    const out = [], tails = [];
+    merged.forEach(function (l) {
+      // zweite Mengenspalte: «90 g 180 g weiche Butter» -> «90 g weiche Butter»
+      let m = l.match(/^(\S+(?:\s(?:g|kg|dl|cl|ml|l|EL|TL|KL|Prisen?|Stk)\b)?)\s+(\d+(?:[.,]\d+)?[½¼¾]?\s?(?:g|kg|dl|cl|ml|l|EL|TL|KL|Prisen?|Stk)?)\s+(\S.*)$/);
+      if (m && hasQty(m[1] + ' x') && RX_QTY_TOKEN.test(m[2].replace(/\s?[A-Za-z]+$/, ''))) l = m[1] + ' ' + m[3];
+      const p = parseIngredientLine(l);
+      if (p && p.qty != null && INSTR_START.test(p.name.split(' ')[0])) { tails.push(p.name); return; } // «2 in Form füllen» ist keine Zutat
+      if (p && p.qty != null) {
+        const words = p.name.split(' ');
+        for (let i = 1; i < words.length; i++) {
+          const w = words[i].replace(/[,.;:]$/, '');
+          const prevWord = words[i - 1];
+          if ((INSTR_START.test(w) || /,$/.test(prevWord) && /^[a-zäöü]/.test(w)) && /^[A-ZÄÖÜ]/.test(prevWord.replace(/^[(]/, ''))) {
+            const tail = words.slice(i).join(' ').replace(/^,\s*/, '');
+            const head = words.slice(0, i).join(' ').replace(/,$/, '');
+            // Zubereitungshinweise wie «gerieben» oder «in feine Ringe geschnitten» bleiben bei der Zutat
+            if (/^(in|fein|grob)\b.*(geschnitten|gehackt|gewürfelt|gerissen|gerieben)$/.test(tail) || /^(ge[a-zäöü]+|[a-zäöü]+iert)$/.test(tail)) break;
+            l = l.slice(0, l.length - p.name.length) + head;
+            tails.push(tail);
+            break;
+          }
+        }
+      }
+      out.push(l);
+    });
+    return { lines: out, tails: tails };
+  }
+
+  function cleanLines(text) {
+    return String(text || '').replace(/\r/g, '').split('\n').map(cleanOcrLine);
+  }
+  // Für Ausschnitte aus dem Foto: der Nutzer sagt, was es ist
+  function cleanIngredientBlock(text) {
+    let servings = null;
+    const lines = cleanLines(text).filter(function (l) {
+      if (!l || isNoise(l)) return false;
+      const sv = l.match(RX_SERVINGS);
+      if (sv && wordCount(l) <= 5) { servings = Number(sv[1] || sv[2]); return false; }
+      return !RX_ING_HEAD.test(l) && !(/:$/.test(l) && wordCount(l) <= 5);
+    });
+    const res = processIngredientLines(lines);
+    return { text: res.lines.join('\n'), notes: res.tails.join('\n'), servings: servings };
+  }
+  function cleanNotesBlock(text) {
+    return joinNotes(cleanLines(text).map(function (l) { return l && isNoise(l) ? null : l; })
+      .filter(function (l) { return l !== null && !RX_NOTES_HEAD.test(l) && !/^(seite\s*)?\d{1,3}$/i.test(l); }));
+  }
+  function cleanTitleBlock(text) {
+    let servings = null;
+    const parts = cleanLines(text).filter(function (l) {
+      if (!l || isNoise(l)) return false;
+      const sv = l.match(RX_SERVINGS);
+      if (sv) { servings = Number(sv[1] || sv[2]); return l.replace(RX_SERVINGS, '').trim().length > 2; }
+      return true;
+    }).map(function (l) { return l.replace(RX_SERVINGS, '').replace(/[\s(),:-]+$/, '').trim(); });
+    return { name: parts.join(' ').replace(/\s+/g, ' ').trim(), servings: servings };
+  }
+
   function parseRecipeText(text, overrides) {
-    const lines = String(text || '').replace(/\r/g, '').split('\n');
     const r = { name: '', servings: null, tags: [], ingredientsText: '', notes: '', link: '' };
-    let section = 'head';
+    const lines = cleanLines(text);
     const ing = [], notes = [];
-    lines.forEach(function (raw) {
-      const line = raw.trim();
+    let section = 'head', nameOpen = false;
+    lines.forEach(function (line) {
       let m;
-      if (/^zutaten\s*:?$/i.test(line)) { section = 'ing'; return; }
-      if (/^(zubereitung|anleitung|notizen)\s*:?$/i.test(line)) { section = 'notes'; return; }
+      if (!line) { nameOpen = false; if (section === 'notes') notes.push(''); return; }
+      if (isNoise(line) || /^(seite\s*)?\d{1,3}$/i.test(line)) return;
       if ((m = line.match(/^stichw(?:ö|oe)rter\s*:\s*(.*)$/i))) {
         r.tags = m[1].split(',').map(function (t) { return t.trim(); }).filter(Boolean); return;
       }
       if ((m = line.match(/^link\s*:\s*(\S+)/i))) { r.link = m[1]; return; }
+      const sv = line.match(RX_SERVINGS);
+      if (RX_ING_HEAD.test(line)) {
+        if (sv && !r.servings) r.servings = Number(sv[1] || sv[2]);
+        section = 'ing'; nameOpen = false; return;
+      }
+      if (RX_NOTES_HEAD.test(line)) { section = 'notes'; nameOpen = false; return; }
+      if (sv && wordCount(line) <= 5 && !(section === 'head' && !r.name && line.replace(RX_SERVINGS, '').trim().length > 2)) {
+        if (!r.servings) r.servings = Number(sv[1] || sv[2]);
+        nameOpen = false; return;
+      }
       if (section === 'head') {
-        if (!line) return;
         if (!r.name) {
-          m = line.match(/^(.*?)\s*\((\d+)\s*(?:personen|portionen|pers\.?|p\.?)\)\s*$/i);
-          if (m) { r.name = m[1].trim(); r.servings = Number(m[2]); } else r.name = line;
+          if (!hasQty(line) && line.length >= 3 && line.length <= 80) {
+            if (sv) { r.servings = Number(sv[1] || sv[2]); line = line.replace(RX_SERVINGS, '').replace(/[\s(),:-]+$/, '').trim(); }
+            r.name = line; nameOpen = true;
+            return;
+          }
+        } else if (nameOpen && !hasQty(line) && wordCount(line) <= 4 && /^[A-ZÄÖÜ]/.test(line) && (r.name + line).length <= 80) {
+          r.name += ' ' + line; // Titel über zwei Zeilen
           return;
         }
-        section = 'ing';
+        nameOpen = false;
+        if (looksLikeIngredient(line)) section = 'ing';
+        else { notes.push(line); return; } // Einleitungstext
       }
       if (section === 'ing') {
-        if (!line) { if (ing.length) section = 'notes'; return; }
-        ing.push(line.replace(/^[-*+]\s*/, ''));
-      } else if (section === 'notes') {
-        notes.push(raw);
+        if (/:$/.test(line) && wordCount(line) <= 5) return; // Zwischentitel wie «Für die Sauce:»
+        if (looksLikeSentence(line) && !hasQty(line)) { section = 'notes'; notes.push(line); return; }
+        if (looksLikeSentence(line) && hasQty(line) && !processIngredientLines([line]).tails.length) { section = 'notes'; notes.push(line); return; }
+        ing.push(line);
+        return;
       }
+      // Tabellen-Rezepte: nach einer Anleitungszeile kann wieder eine Zutat kommen
+      if (hasQty(line) && (!looksLikeSentence(line) || processIngredientLines([line]).tails.length)) {
+        const p = parseIngredientLine(line);
+        if (!/^(min|std|°|grad|cm|minuten|stunden)/i.test(p.name) && !INSTR_START.test(p.name.split(' ')[0])) { ing.push(line); section = 'ing'; return; }
+      }
+      notes.push(line);
     });
-    r.ingredientsText = ing.join('\n');
-    r.notes = notes.join('\n').trim();
+    const res = processIngredientLines(ing);
+    r.ingredientsText = res.lines.join('\n');
+    r.notes = [res.tails.join('\n'), joinNotes(notes)].filter(Boolean).join('\n\n').trim();
     return r;
   }
 
@@ -367,7 +559,8 @@
     parseNumber, parseIngredientLine, parseIngredients, ingredientsToText,
     normName, mergeKey, guessCategory, toBase, fromBase, formatNumber, formatQty, roundForShopping,
     lastUsedMap, suggestRecipes, buildShoppingFromPlan, mergeShopping, groupByCategory,
-    itemKey, shoppingToText, parseShoppingText, planToText, recipeToText, parseRecipeText
+    itemKey, shoppingToText, parseShoppingText, planToText, recipeToText, parseRecipeText,
+    shortName, cleanIngredientBlock, cleanNotesBlock, cleanTitleBlock
   };
   if (typeof module !== 'undefined') module.exports = api;
   else root.Logic = api;

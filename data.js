@@ -26,7 +26,7 @@ const CATEGORY_KEYWORDS = {
   brot: ['brot', 'zopf', 'brötchen', 'weggli', 'gipfeli', 'toast', 'tortilla', 'wrap', 'pita', 'fladenbrot',
     'blätterteig', 'kuchenteig', 'pizzateig', 'paniermehl'],
   milch: ['milch', 'rahm', 'sahne', 'butter', 'joghurt', 'jogurt', 'quark', 'käse', 'mozzarella', 'parmesan',
-    'feta', 'mascarpone', 'ricotta', 'crème fraîche', 'creme fraiche', 'sauerrahm', 'ei', 'eier', 'gruyère',
+    'feta', 'mascarpone', 'ricotta', 'crème fraîche', 'creme fraiche', 'sauerrahm', 'ei', 'eier', 'eigelb', 'eiweiss', 'gruyère',
     'emmentaler', 'raclette', 'hüttenkäse', 'tofu'],
   fleisch: ['fleisch', 'hack', 'poulet', 'hähnchen', 'huhn', 'rind', 'schwein', 'kalb', 'lamm', 'speck', 'schinken',
     'wurst', 'cervelat', 'bratwurst', 'salami', 'lachs', 'fisch', 'thon frisch', 'crevette', 'garnele',
@@ -34,10 +34,11 @@ const CATEGORY_KEYWORDS = {
   vorrat: ['spaghetti', 'penne', 'nudel', 'teigwaren', 'pasta', 'hörnli', 'reis', 'risotto', 'couscous', 'bulgur',
     'quinoa', 'linsen', 'kichererbsen', 'mehl', 'zucker', 'haferflocken', 'müesli', 'polenta', 'dose', 'pelati',
     'passata', 'tomatenpüree', 'kokosmilch', 'thon', 'bouillon', 'brühe', 'öl', 'olivenöl', 'essig', 'honig',
-    'konfitüre', 'nüsse', 'mandeln', 'backpulver', 'hefe', 'bohnen', 'gnocchi', 'lasagne', 'cornflakes', 'kaffee', 'tee'],
+    'konfitüre', 'nüsse', 'mandeln', 'backpulver', 'hefe', 'bohnen', 'gnocchi', 'lasagne', 'cornflakes', 'kaffee', 'tee',
+    'suppenpulver', 'ramen', 'nori', 'mohn', 'sesam', 'vanillezucker', 'kakao', 'stärke', 'maizena', 'rosinen', 'samen'],
   gewuerze: ['salz', 'pfeffer', 'paprikapulver', 'curry', 'zimt', 'oregano', 'thymian', 'rosmarin', 'muskat',
     'kreuzkümmel', 'senf', 'ketchup', 'mayonnaise', 'sojasauce', 'sojasosse', 'sauce', 'sosse', 'pesto',
-    'gewürz', 'aromat', 'tabasco', 'sambal', 'lorbeer'],
+    'gewürz', 'aromat', 'tabasco', 'sambal', 'lorbeer', 'gochujang', 'sriracha', 'currypaste', 'fischsauce', 'miso'],
   tiefkuehl: ['tiefkühl', 'tk-', 'glace', 'eis ', 'pommes', 'fischstäbchen', 'tiefgekühlt'],
   getraenke: ['wasser', 'mineral', 'saft', 'bier', 'wein', 'cola', 'sirup', 'eistee', 'limonade', 'prosecco'],
   suess: ['schokolade', 'chips', 'guetzli', 'kekse', 'bonbon', 'gummibär', 'riegel', 'popcorn', 'apéro'],
@@ -56,7 +57,8 @@ const UNITS = {
   'bund': 'Bund', 'dose': 'Dose', 'dosen': 'Dose', 'pck': 'Pck', 'pck.': 'Pck', 'packung': 'Pck', 'packungen': 'Pck',
   'becher': 'Becher', 'zehe': 'Zehe', 'zehen': 'Zehe', 'scheibe': 'Scheibe', 'scheiben': 'Scheibe',
   'glas': 'Glas', 'gläser': 'Glas', 'flasche': 'Flasche', 'flaschen': 'Flasche', 'tasse': 'Tasse', 'tassen': 'Tasse',
-  'handvoll': 'Handvoll', 'zweig': 'Zweig', 'zweige': 'Zweig', 'kopf': 'Kopf', 'beutel': 'Beutel'
+  'handvoll': 'Handvoll', 'zweig': 'Zweig', 'zweige': 'Zweig', 'kopf': 'Kopf', 'beutel': 'Beutel',
+  'kl': 'KL', 'kl.': 'KL', 'kaffeelöffel': 'KL', 'nester': 'Nest', 'nest': 'Nest', 'blatt': 'Blatt', 'blätter': 'Blatt'
 };
 
 const DEFAULT_TAGS = ['vegetarisch', 'vegan', 'schnell', 'Fleisch', 'Fisch', 'Pasta', 'Ofen', 'Suppe', 'Salat', 'Kinder', 'Wochenende'];
