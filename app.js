@@ -140,7 +140,8 @@
       '<div style="text-align:center"><strong>KW ' + L.isoWeekNumber(ui.week) + '</strong>' +
       '<div class="muted">' + L.formatDay(days[0]).slice(3) + ' bis ' + L.formatDay(days[6]).slice(3) + '</div></div>' +
       '<button class="icon-btn" data-a="week" data-d="7" aria-label="Nächste Woche">&#8250;</button></div>';
-    if (ui.week !== L.mondayOf(t)) h += '<div class="btn-row"><button class="btn small" data-a="weekToday">Zur aktuellen Woche</button></div>';
+    h += '<div class="btn-row">' + (ui.week !== L.mondayOf(t) ? '<button class="btn small" data-a="weekToday">Zur aktuellen Woche</button>' : '') +
+      '<button class="btn small" data-a="sharePlan">Plan teilen</button></div>';
     h += '<div class="btn-row"><button class="btn soft" data-a="fillWeek">Woche füllen</button>' +
       '<button class="btn primary" data-a="genShop">Einkaufsliste erstellen</button></div>';
     if (!state.recipes.length) {
@@ -173,7 +174,7 @@
   function renderRecipes() {
     const tags = allTags();
     let h = '<div class="row" style="margin-bottom:10px"><input type="search" id="recSearch" placeholder="Rezept oder Zutat suchen" value="' + esc(ui.search) + '">' +
-      '<button class="btn primary" data-a="newRecipe">+ Neu</button></div>';
+      '<button class="btn" data-a="pasteRecipe">Einfügen</button><button class="btn primary" data-a="newRecipe">+ Neu</button></div>';
     if (tags.length) {
       h += '<div class="chips" style="margin-bottom:12px">' + tags.map(function (t) {
         return '<button class="chip' + (ui.tagFilter.indexOf(t) >= 0 ? ' on' : '') + '" data-a="recTag" data-tag="' + esc(t) + '">' + esc(t) + '</button>';
@@ -209,7 +210,9 @@
     const items = state.shopping;
     let h = '<div class="addbar"><input type="text" id="addName" placeholder="Artikel hinzufügen, z.B. 2 l Milch" enterkeyhint="done" autocomplete="off">' +
       '<button class="btn primary" data-a="addItem" aria-label="Hinzufügen">+</button>' +
-      '<select id="addCat" aria-label="Kategorie">' + catOptions('sonstiges') + '</select></div>';
+      '<select id="addCat" aria-label="Kategorie">' + catOptions('sonstiges') + '</select></div>' +
+      '<div class="btn-row"><button class="btn small" data-a="shareShop"' + (items.some(function (i) { return !i.checked; }) ? '' : ' disabled') + '>Liste teilen</button>' +
+      '<button class="btn small" data-a="pasteShop">Liste einfügen</button></div>';
     if (!items.length) {
       return h + '<div class="empty">Die Liste ist leer.<br>Im Wochenplan «Einkaufsliste erstellen» tippen oder oben eigene Artikel wie Abwaschmittel hinzufügen.</div>';
     }
@@ -303,6 +306,7 @@
     if (r.link) h += '<p><a href="' + esc(r.link) + '" target="_blank" rel="noopener">Originalrezept öffnen</a></p>';
     h += '<div class="btn-row" style="margin-top:16px"><button class="btn primary" data-a="planRecipe" data-id="' + r.id + '">In Wochenplan</button>' +
       '<button class="btn" data-a="editRecipe" data-id="' + r.id + '">Bearbeiten</button>' +
+      '<button class="btn" data-a="shareRecipe" data-id="' + r.id + '">Teilen</button>' +
       '<button class="btn danger" data-a="delRecipe" data-id="' + r.id + '">Löschen</button></div>';
     openModal(r.name, h);
   }
@@ -320,9 +324,9 @@
     openModal(r.name + ': wann?', h);
   }
 
-  function editRecipe(id) {
+  function editRecipe(id, draft) {
     const src = id ? recipesById()[id] : null;
-    const r = src ? JSON.parse(JSON.stringify(src)) : { id: null, name: '', servings: state.settings.people, tags: [], ingredients: [], notes: '', link: '', fav: false };
+    const r = src ? JSON.parse(JSON.stringify(src)) : Object.assign({ id: null, name: '', servings: state.settings.people, tags: [], ingredients: [], notes: '', link: '', fav: false }, draft || {});
     ui.edit = { r: r, tags: new Set(r.tags || []), cats: {}, changed: new Set() };
     (r.ingredients || []).forEach(function (i) { ui.edit.cats[L.mergeKey(i.name)] = i.cat; });
     const tagPool = Array.from(new Set(DEFAULT_TAGS.concat(allTags(), r.tags || [])));
@@ -401,7 +405,7 @@
       '<div class="btn-row"><button class="btn" data-a="export">Backup exportieren</button><button class="btn" data-a="importBtn">Backup importieren</button></div>' +
       '<input type="file" id="importFile" accept="application/json,.json" hidden>' +
       '<div class="btn-row"><button class="btn soft" data-a="samples">Beispielrezepte laden</button><button class="btn danger" data-a="wipe">Alle Daten löschen</button></div>' +
-      '<p class="muted">Menüplan Version 1.0 &middot; ' + state.recipes.length + ' Rezepte</p>';
+      '<p class="muted">Menüplan Version 1.1 &middot; ' + state.recipes.length + ' Rezepte</p>';
     openModal('Einstellungen', h);
   }
   function catOrderHtml() {
@@ -412,6 +416,55 @@
         '<button class="btn small" data-a="catMove" data-cat="' + id + '" data-d="-1"' + (idx === 0 ? ' disabled' : '') + ' aria-label="Nach oben">&#8593;</button>' +
         '<button class="btn small" data-a="catMove" data-cat="' + id + '" data-d="1"' + (idx === order.length - 1 ? ' disabled' : '') + ' aria-label="Nach unten">&#8595;</button></div>';
     }).join('');
+  }
+
+  // ---------- Teilen und Einfügen ----------
+  async function shareText(title, text) {
+    if (navigator.share) {
+      try { await navigator.share({ title: title, text: text }); return; }
+      catch (e) { if (e && e.name === 'AbortError') return; }
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      toast('In die Zwischenablage kopiert. In WhatsApp einfügen.');
+    } catch (e) {
+      openModal(title, '<div class="muted" style="margin-bottom:6px">Text markieren und kopieren:</div><textarea rows="14" readonly>' + esc(text) + '</textarea>');
+    }
+  }
+  function openPaste(kind) {
+    ui.pasteKind = kind;
+    const hint = kind === 'shop'
+      ? 'Nachricht mit der Liste hier einfügen (lange tippen > Einfügen). Eine Zeile pro Artikel, z.B. «2 l Milch». Überschriften wie «Gemüse & Früchte:» werden als Kategorie übernommen.'
+      : 'Geteiltes Rezept hier einfügen. Erste Zeile ist der Name, nach «Zutaten:» eine Zutat pro Zeile, nach «Zubereitung:» der Text.';
+    openModal(kind === 'shop' ? 'Liste einfügen' : 'Rezept einfügen',
+      '<div class="muted" style="margin-bottom:8px">' + hint + '</div>' +
+      '<textarea id="pasteText" rows="12" placeholder="Hier einfügen"></textarea>' +
+      '<div class="btn-row" style="margin-top:10px"><button class="btn primary" data-a="pasteApply">Übernehmen</button><button class="btn" data-a="close">Abbrechen</button></div>');
+  }
+  function applyPaste() {
+    const text = $('#pasteText').value;
+    if (!text.trim()) { toast('Zuerst Text einfügen'); return; }
+    if (ui.pasteKind === 'shop') {
+      const items = L.parseShoppingText(text, state.settings.catOverrides);
+      const openKeys = new Set(state.shopping.filter(function (i) { return !i.checked; }).map(function (i) { return i.key; }));
+      let n = 0;
+      items.forEach(function (p) {
+        const key = L.itemKey(p.name, p.unit);
+        if (openKeys.has(key)) return; // steht schon offen auf der Liste
+        openKeys.add(key);
+        state.shopping.push({ id: uid(), key: key, name: p.name, qty: p.qty, unit: p.unit, cat: p.cat, from: [], source: 'manual', checked: false });
+        n++;
+      });
+      save(); closeModal(); ui.tab = 'shop'; render();
+      toast(n ? n + ' Artikel übernommen' : 'Nichts Neues, alles schon auf der Liste');
+    } else {
+      const d = L.parseRecipeText(text, state.settings.catOverrides);
+      if (!d.name) { toast('Kein Rezeptname gefunden'); return; }
+      const draft = { name: d.name, servings: d.servings || state.settings.people, tags: d.tags,
+        ingredients: L.parseIngredients(d.ingredientsText, state.settings.catOverrides), notes: d.notes, link: d.link };
+      editRecipe(null, draft);
+      toast('Prüfen und speichern');
+    }
   }
 
   // ---------- Bildschirm anlassen beim Einkaufen ----------
@@ -575,6 +628,17 @@
       state.shopping = []; save(); render();
     },
     wake: function () { toggleWake(); },
+    shareShop: function () {
+      shareText('Einkaufsliste', L.shoppingToText(state.shopping, state.settings.catOrder, 'Einkaufsliste ' + L.formatDay(today()).slice(3)));
+    },
+    pasteShop: function () { openPaste('shop'); },
+    pasteRecipe: function () { openPaste('recipe'); },
+    pasteApply: function () { applyPaste(); },
+    sharePlan: function () { shareText('Wochenplan', L.planToText(state, ui.week)); },
+    shareRecipe: function (el) {
+      const r = recipesById()[el.dataset.id];
+      if (r) shareText(r.name, L.recipeToText(r));
+    },
 
     // Einstellungen
     catMove: function (el) {
@@ -622,7 +686,7 @@
     if (ui.addCatTouched && cat !== L.guessCategory(p.name, state.settings.catOverrides)) {
       state.settings.catOverrides[L.mergeKey(p.name)] = cat;
     }
-    state.shopping.push({ id: uid(), key: L.mergeKey(p.name) + '|' + p.unit, name: p.name, qty: p.qty, unit: p.qty != null ? p.unit : '',
+    state.shopping.push({ id: uid(), key: L.itemKey(p.name, p.unit), name: p.name, qty: p.qty, unit: p.qty != null ? p.unit : '',
       cat: cat, from: [], source: 'manual', checked: false });
     ui.addCatTouched = false;
     save(); render();

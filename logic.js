@@ -2,7 +2,7 @@
    Im Browser global verfügbar, in Node per require() testbar. */
 
 (function (root) {
-  const D = (typeof module !== 'undefined') ? require('./data.js') : { UNITS: UNITS, CATEGORY_KEYWORDS: CATEGORY_KEYWORDS };
+  const D = (typeof module !== 'undefined') ? require('./data.js') : { UNITS: UNITS, CATEGORY_KEYWORDS: CATEGORY_KEYWORDS, CATEGORIES: CATEGORIES };
 
   // ---------- Datum ----------
   function toISO(d) {
@@ -55,6 +55,8 @@
     if (tok == null) return null;
     tok = String(tok).trim();
     if (FRACTIONS[tok] != null) return FRACTIONS[tok];
+    let mf = tok.match(/^(\d+)\s*([½¼¾⅓⅔])$/); // "1½"
+    if (mf) return Number(mf[1]) + FRACTIONS[mf[2]];
     let m = tok.match(/^(\d+)\s*\/\s*(\d+)$/);
     if (m) return Number(m[1]) / Number(m[2]);
     m = tok.match(/^(\d+(?:[.,]\d+)?)(?:\s*-\s*\d+(?:[.,]\d+)?)?$/); // "2-3" -> 2
@@ -67,7 +69,7 @@
     let s = String(line || '').trim().replace(/^[-*]\s*/, '');
     if (!s) return null;
     let qty = null, unit = '';
-    let m = s.match(/^((?:\d+\s*\/\s*\d+)|(?:\d+(?:[.,]\d+)?(?:\s*-\s*\d+(?:[.,]\d+)?)?)|[½¼¾⅓⅔])\s*(.*)$/);
+    let m = s.match(/^((?:\d+\s*[½¼¾⅓⅔])|(?:\d+\s*\/\s*\d+)|(?:\d+(?:[.,]\d+)?(?:\s*-\s*\d+(?:[.,]\d+)?)?)|[½¼¾⅓⅔])\s*(.*)$/);
     if (m) {
       qty = parseNumber(m[1]);
       s = m[2].trim();
@@ -252,11 +254,120 @@
     });
   }
 
+  // ---------- Teilen als Text (WhatsApp, SMS ...) und wieder einlesen ----------
+  function catLabel(id) {
+    const c = D.CATEGORIES.find(function (x) { return x.id === id; });
+    return c ? c.label : id;
+  }
+  // Schlüssel für «gleicher Artikel»: Name ohne Mehrzahl + Grundeinheit (dl und l zählen als ml)
+  function itemKey(name, unit) {
+    return mergeKey(name) + '|' + toBase(1, unit || '').unit;
+  }
+  function itemLine(i) {
+    return (i.qty != null ? formatQty(i.qty, i.unit) + ' ' : '') + i.name;
+  }
+
+  // Nur offene Artikel, nach Laden-Reihenfolge gruppiert
+  function shoppingToText(items, catOrder, title) {
+    const open = items.filter(function (i) { return !i.checked; });
+    const lines = [title || 'Einkaufsliste'];
+    groupByCategory(open, catOrder).forEach(function (g) {
+      lines.push('');
+      lines.push(catLabel(g.cat) + ':');
+      g.items.forEach(function (i) { lines.push('- ' + itemLine(i)); });
+    });
+    return lines.join('\n');
+  }
+
+  // Liest eine geteilte oder frei getippte Liste. Überschriften wie «Gemüse & Früchte:» setzen die Kategorie.
+  function parseShoppingText(text, overrides) {
+    const labelToId = {};
+    D.CATEGORIES.forEach(function (c) { labelToId[normName(c.label)] = c.id; });
+    let currentCat = null;
+    const out = [];
+    String(text || '').split(/\r?\n/).forEach(function (raw) {
+      let line = raw.trim();
+      if (!line) { currentCat = null; return; } // Leerzeile beendet eine Kategorie
+      const head = normName(line.replace(/:$/, ''));
+      if (labelToId[head]) { currentCat = labelToId[head]; return; }
+      if (/^(einkaufsliste|wochenplan)\b/i.test(line)) return;
+      line = line.replace(/^(?:[-*+]|\[\s?[xX ]?\]|\d+[.)])\s*/, '').replace(/^[☐☑☒□○•·]\s*/, '');
+      const p = parseIngredientLine(line);
+      if (!p) return;
+      p.cat = currentCat || guessCategory(p.name, overrides);
+      if (p.qty == null) p.unit = '';
+      out.push(p);
+    });
+    return out;
+  }
+
+  function planToText(state, monday) {
+    const byId = {};
+    state.recipes.forEach(function (r) { byId[r.id] = r; });
+    const days = weekDays(monday);
+    const lines = ['Wochenplan KW ' + isoWeekNumber(monday) + ' (' + formatDay(days[0]).slice(3) + ' bis ' + formatDay(days[6]).slice(3) + ')', ''];
+    days.forEach(function (d) {
+      const meals = (state.plan[d] || []).map(function (m) {
+        const r = byId[m.recipeId];
+        return r ? r.name + ' (' + m.servings + ' P.)' : m.text;
+      }).filter(Boolean);
+      lines.push(formatDay(d) + ': ' + (meals.length ? meals.join(', ') : 'offen'));
+    });
+    return lines.join('\n');
+  }
+
+  function recipeToText(r) {
+    const lines = [r.name + ' (' + r.servings + ' Personen)'];
+    if (r.tags && r.tags.length) lines.push('Stichwörter: ' + r.tags.join(', '));
+    lines.push('', 'Zutaten:');
+    (r.ingredients || []).forEach(function (i) { lines.push(itemLine(i)); });
+    if (r.notes) lines.push('', 'Zubereitung:', r.notes);
+    if (r.link) lines.push('', 'Link: ' + r.link);
+    return lines.join('\n');
+  }
+
+  // Gegenstück zu recipeToText, verträgt auch lose getippte Rezepte
+  function parseRecipeText(text, overrides) {
+    const lines = String(text || '').replace(/\r/g, '').split('\n');
+    const r = { name: '', servings: null, tags: [], ingredientsText: '', notes: '', link: '' };
+    let section = 'head';
+    const ing = [], notes = [];
+    lines.forEach(function (raw) {
+      const line = raw.trim();
+      let m;
+      if (/^zutaten\s*:?$/i.test(line)) { section = 'ing'; return; }
+      if (/^(zubereitung|anleitung|notizen)\s*:?$/i.test(line)) { section = 'notes'; return; }
+      if ((m = line.match(/^stichw(?:ö|oe)rter\s*:\s*(.*)$/i))) {
+        r.tags = m[1].split(',').map(function (t) { return t.trim(); }).filter(Boolean); return;
+      }
+      if ((m = line.match(/^link\s*:\s*(\S+)/i))) { r.link = m[1]; return; }
+      if (section === 'head') {
+        if (!line) return;
+        if (!r.name) {
+          m = line.match(/^(.*?)\s*\((\d+)\s*(?:personen|portionen|pers\.?|p\.?)\)\s*$/i);
+          if (m) { r.name = m[1].trim(); r.servings = Number(m[2]); } else r.name = line;
+          return;
+        }
+        section = 'ing';
+      }
+      if (section === 'ing') {
+        if (!line) { if (ing.length) section = 'notes'; return; }
+        ing.push(line.replace(/^[-*+]\s*/, ''));
+      } else if (section === 'notes') {
+        notes.push(raw);
+      }
+    });
+    r.ingredientsText = ing.join('\n');
+    r.notes = notes.join('\n').trim();
+    return r;
+  }
+
   const api = {
     toISO, fromISO, addDays, mondayOf, weekDays, daysBetween, formatDay, isoWeekNumber,
     parseNumber, parseIngredientLine, parseIngredients, ingredientsToText,
     normName, mergeKey, guessCategory, toBase, fromBase, formatNumber, formatQty, roundForShopping,
-    lastUsedMap, suggestRecipes, buildShoppingFromPlan, mergeShopping, groupByCategory
+    lastUsedMap, suggestRecipes, buildShoppingFromPlan, mergeShopping, groupByCategory,
+    itemKey, shoppingToText, parseShoppingText, planToText, recipeToText, parseRecipeText
   };
   if (typeof module !== 'undefined') module.exports = api;
   else root.Logic = api;

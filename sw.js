@@ -1,6 +1,6 @@
 /* Service Worker: speichert die App-Dateien, damit sie im Laden auch ohne Netz startet.
    Bei jeder Änderung an den App-Dateien VERSION hochzählen, sonst sieht das Handy die alte Fassung. */
-const VERSION = 'menuplan-v1.0.0';
+const VERSION = 'menuplan-v1.1.0';
 const FILES = [
   './', './index.html', './styles.css', './data.js', './logic.js', './app.js', './manifest.webmanifest',
   './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png'
