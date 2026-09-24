@@ -63,31 +63,6 @@ const UNITS = {
 
 const DEFAULT_TAGS = ['vegetarisch', 'vegan', 'schnell', 'Fleisch', 'Fisch', 'Pasta', 'Ofen', 'Suppe', 'Salat', 'Kinder', 'Wochenende'];
 
-// Optionale Beispielrezepte zum Ausprobieren (Einstellungen > Beispielrezepte laden)
-const SAMPLE_RECIPES = [
-  { name: 'Spaghetti Bolognese', servings: 4, tags: ['Pasta', 'Fleisch', 'Kinder'],
-    ingredients: '500 g Spaghetti\n400 g Rindshackfleisch\n1 Zwiebel\n2 Zehen Knoblauch\n1 Rüebli\n1 Dose Pelati\n2 EL Tomatenpüree\n2 EL Olivenöl\n1 dl Rotwein\nSalz\nPfeffer\n50 g Parmesan',
-    notes: 'Zwiebel, Knoblauch, Rüebli fein hacken und andünsten. Hackfleisch anbraten, mit Wein ablöschen, Pelati und Püree dazu, 30 Min. köcheln.' },
-  { name: 'Älplermagronen mit Apfelmus', servings: 4, tags: ['vegetarisch', 'Kinder'],
-    ingredients: '400 g Hörnli\n400 g Kartoffeln\n200 g Gruyère\n2 dl Rahm\n2 Zwiebeln\n2 EL Butter\n4 Äpfel\nSalz\nMuskat',
-    notes: 'Kartoffelwürfel mit den Hörnli kochen. Mit Rahm und Käse mischen, Röstzwiebeln darüber. Apfelmus dazu.' },
-  { name: 'Poulet-Curry mit Reis', servings: 4, tags: ['Fleisch', 'schnell'],
-    ingredients: '600 g Pouletbrust\n300 g Reis\n1 Dose Kokosmilch\n2 EL Currypaste\n1 Peperoni\n1 Zucchetti\n1 Zwiebel\n1 Stk Ingwer\n2 EL Öl\n1 Limette',
-    notes: 'Poulet anbraten, Gemüse dazu, mit Kokosmilch und Currypaste 15 Min. köcheln. Mit Limette abschmecken.' },
-  { name: 'Ofengemüse mit Feta', servings: 2, tags: ['vegetarisch', 'Ofen', 'schnell'],
-    ingredients: '500 g Kartoffeln\n1 Peperoni\n1 Zucchetti\n1 Zwiebel\n200 g Feta\n3 EL Olivenöl\n1 TL Thymian\nSalz\nPfeffer',
-    notes: 'Gemüse schneiden, mit Öl und Gewürzen mischen, 35 Min. bei 200 °C backen, Feta in den letzten 10 Min. dazu.' },
-  { name: 'Lachs mit Ofenkartoffeln und Salat', servings: 2, tags: ['Fisch', 'Ofen'],
-    ingredients: '2 Stk Lachsfilet\n600 g Kartoffeln\n1 Kopf Salat\n1 Zitrone\n1 Becher Sauerrahm\n1 Bund Schnittlauch\n2 EL Olivenöl\nSalz',
-    notes: 'Kartoffeln halbieren, 40 Min. backen. Lachs die letzten 15 Min. dazu. Sauerrahm mit Schnittlauch als Dip.' },
-  { name: 'Linsensuppe', servings: 4, tags: ['vegan', 'Suppe'],
-    ingredients: '250 g rote Linsen\n1 Zwiebel\n2 Rüebli\n1 Stk Ingwer\n1 Dose Kokosmilch\n1 l Bouillon\n1 TL Kreuzkümmel\n1 Zitrone',
-    notes: 'Alles andünsten, mit Bouillon 20 Min. kochen, pürieren, mit Kokosmilch und Zitrone abschmecken.' },
-  { name: 'Wähe mit Käse', servings: 4, tags: ['vegetarisch', 'Ofen', 'Wochenende'],
-    ingredients: '1 Pck Kuchenteig\n250 g Emmentaler\n3 Eier\n2 dl Milch\n1 dl Rahm\nSalz\nPfeffer\nMuskat',
-    notes: 'Teig ins Blech, Käse darauf, Guss aus Eiern, Milch, Rahm darüber. 30 Min. bei 220 °C.' }
-];
-
 if (typeof module !== 'undefined') {
-  module.exports = { CATEGORIES, CATEGORY_KEYWORDS, UNITS, DEFAULT_TAGS, SAMPLE_RECIPES };
+  module.exports = { CATEGORIES, CATEGORY_KEYWORDS, UNITS, DEFAULT_TAGS };
 }

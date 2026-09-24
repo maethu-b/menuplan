@@ -187,7 +187,7 @@
 
   function renderRecipeList() {
     if (!state.recipes.length) {
-      return '<div class="empty">Noch keine Rezepte. Tippe auf «+ Neu» oder lade unter Einstellungen (Zahnrad) die Beispielrezepte.</div>';
+      return '<div class="empty">Noch keine Rezepte. Tippe auf «Foto», «Einfügen» oder «+ Neu».</div>';
     }
     const q = L.normName(ui.search);
     const list = state.recipes.filter(function (r) {
@@ -406,8 +406,8 @@
       '<div class="muted" style="margin-bottom:8px">Alle Daten liegen nur auf diesem Handy. Ein Backup schützt vor Verlust, z.B. beim Gerätewechsel auf das S26.</div>' +
       '<div class="btn-row"><button class="btn" data-a="export">Backup exportieren</button><button class="btn" data-a="importBtn">Backup importieren</button></div>' +
       '<input type="file" id="importFile" accept="application/json,.json" hidden>' +
-      '<div class="btn-row"><button class="btn soft" data-a="samples">Beispielrezepte laden</button><button class="btn danger" data-a="wipe">Alle Daten löschen</button></div>' +
-      '<p class="muted">Menüplan Version 1.3 &middot; ' + state.recipes.length + ' Rezepte</p>';
+      '<div class="btn-row"><button class="btn danger" data-a="wipe">Alle Daten löschen</button></div>' +
+      '<p class="muted">Menüplan Version 1.4 &middot; ' + state.recipes.length + ' Rezepte</p>';
     openModal('Einstellungen', h);
   }
   function catOrderHtml() {
@@ -938,18 +938,6 @@
       toast('Backup gespeichert (Ordner Downloads)');
     },
     importBtn: function () { $('#importFile').click(); },
-    samples: function () {
-      const names = new Set(state.recipes.map(function (r) { return L.normName(r.name); }));
-      let n = 0;
-      SAMPLE_RECIPES.forEach(function (s) {
-        if (names.has(L.normName(s.name))) return;
-        state.recipes.push({ id: uid(), name: s.name, servings: s.servings, tags: s.tags.slice(),
-          ingredients: L.parseIngredients(s.ingredients, state.settings.catOverrides), notes: s.notes, link: '', fav: false });
-        n++;
-      });
-      save(); closeModal(); render();
-      toast(n ? n + ' Beispielrezepte geladen' : 'Beispielrezepte sind schon da');
-    },
     wipe: function () {
       if (!confirm('Wirklich alle Rezepte, Pläne und die Einkaufsliste löschen?')) return;
       if (!confirm('Sicher? Das lässt sich nicht rückgängig machen.')) return;
@@ -1021,10 +1009,40 @@
     else if (e.target.id === 'pickFree') { e.preventDefault(); actions.addFree({ dataset: { day: ui.pickDay } }); }
   });
 
+  // ---------- Einmalig: früher mitgelieferte Beispielrezepte entfernen (Version 1.4) ----------
+  // Gelöscht wird nur, was unverändert ist (gleicher Name und gleicher Zubereitungstext).
+  const OLD_SAMPLES = [
+    { name: 'Spaghetti Bolognese', notes: 'Zwiebel, Knoblauch, Rüebli fein hacken und andünsten. Hackfleisch anbraten, mit Wein ablöschen, Pelati und Püree dazu, 30 Min. köcheln.' },
+    { name: 'Älplermagronen mit Apfelmus', notes: 'Kartoffelwürfel mit den Hörnli kochen. Mit Rahm und Käse mischen, Röstzwiebeln darüber. Apfelmus dazu.' },
+    { name: 'Poulet-Curry mit Reis', notes: 'Poulet anbraten, Gemüse dazu, mit Kokosmilch und Currypaste 15 Min. köcheln. Mit Limette abschmecken.' },
+    { name: 'Ofengemüse mit Feta', notes: 'Gemüse schneiden, mit Öl und Gewürzen mischen, 35 Min. bei 200 °C backen, Feta in den letzten 10 Min. dazu.' },
+    { name: 'Lachs mit Ofenkartoffeln und Salat', notes: 'Kartoffeln halbieren, 40 Min. backen. Lachs die letzten 15 Min. dazu. Sauerrahm mit Schnittlauch als Dip.' },
+    { name: 'Linsensuppe', notes: 'Alles andünsten, mit Bouillon 20 Min. kochen, pürieren, mit Kokosmilch und Zitrone abschmecken.' },
+    { name: 'Wähe mit Käse', notes: 'Teig ins Blech, Käse darauf, Guss aus Eiern, Milch, Rahm darüber. 30 Min. bei 220 °C.' }
+  ];
+  function removeOldSamples() {
+    if (state.settings.samplesRemoved) return;
+    const byName = {};
+    OLD_SAMPLES.forEach(function (x) { byName[x.name] = x.notes; });
+    const gone = state.recipes.filter(function (r) { return byName[r.name] != null && (r.notes || '') === byName[r.name]; });
+    if (gone.length) {
+      const ids = new Set(gone.map(function (r) { return r.id; }));
+      state.recipes = state.recipes.filter(function (r) { return !ids.has(r.id); });
+      Object.keys(state.plan).forEach(function (d) {
+        state.plan[d] = state.plan[d].filter(function (m) { return !ids.has(m.recipeId); });
+        if (!state.plan[d].length) delete state.plan[d];
+      });
+    }
+    state.settings.samplesRemoved = true;
+    save();
+    if (gone.length) setTimeout(function () { toast(gone.length === 1 ? '1 Beispielrezept entfernt' : gone.length + ' Beispielrezepte entfernt'); }, 400);
+  }
+
   // ---------- Start ----------
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', function () { navigator.serviceWorker.register('sw.js').catch(function () { /* offline-Modus optional */ }); });
   }
   if (navigator.storage && navigator.storage.persist) { navigator.storage.persist().catch(function () { /* egal */ }); }
+  removeOldSamples();
   render();
 })();
