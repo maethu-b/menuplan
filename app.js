@@ -23,15 +23,57 @@
     return { version: 1, recipes: [], plan: {}, shopping: [],
       settings: { people: 2, catOrder: CATEGORIES.map(function (c) { return c.id; }), catOverrides: {} } };
   }
+  // Gespeicherte oder importierte Daten auf erwartete Typen zurechtstutzen.
+  // Schützt davor, dass eine manipulierte Backup-Datei Programmcode in die Anzeige schmuggelt.
+  const RX_ID = /^[a-z0-9]{4,40}$/i;
+  function str(v, max) { return (typeof v === 'string' ? v : v == null ? '' : String(v)).slice(0, max || 500); }
+  function int(v, def, min, max) { const n = parseInt(v, 10); return isFinite(n) ? Math.max(min, Math.min(max, n)) : def; }
+  function num(v) { const n = Number(v); return v != null && v !== '' && isFinite(n) ? n : null; }
+  function cid(v) { return CAT[v] ? v : 'sonstiges'; }
+  function sid(v) { return typeof v === 'string' && RX_ID.test(v) ? v : uid(); }
+  function cleanRecipe(r) {
+    return { id: sid(r.id), name: str(r.name, 200) || 'Ohne Namen', servings: int(r.servings, 2, 1, 99),
+      tags: (Array.isArray(r.tags) ? r.tags : []).map(function (t) { return str(t, 40); }).filter(Boolean).slice(0, 30),
+      ingredients: (Array.isArray(r.ingredients) ? r.ingredients : []).filter(function (i) { return i && typeof i === 'object'; }).slice(0, 200).map(function (i) {
+        return { qty: num(i.qty), unit: str(i.unit, 20), name: str(i.name, 200), cat: cid(i.cat) };
+      }).filter(function (i) { return i.name; }),
+      notes: str(r.notes, 20000), link: L.safeUrl(r.link), fav: !!r.fav };
+  }
+  function cleanPlan(p) {
+    const out = {};
+    if (!p || typeof p !== 'object') return out;
+    Object.keys(p).forEach(function (day) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !Array.isArray(p[day])) return;
+      const meals = p[day].filter(function (m) { return m && typeof m === 'object'; }).map(function (m) {
+        const o = { id: sid(m.id), servings: int(m.servings, 2, 1, 99) };
+        if (typeof m.recipeId === 'string' && RX_ID.test(m.recipeId)) o.recipeId = m.recipeId;
+        else if (m.text) o.text = str(m.text, 200);
+        return o;
+      }).filter(function (m) { return m.recipeId || m.text; });
+      if (meals.length) out[day] = meals;
+    });
+    return out;
+  }
+  function cleanItem(i) {
+    return { id: sid(i.id), key: str(i.key, 250), name: str(i.name, 200), qty: num(i.qty), unit: str(i.unit, 20), cat: cid(i.cat),
+      from: (Array.isArray(i.from) ? i.from : []).map(function (x) { return str(x, 200); }).slice(0, 20),
+      source: i.source === 'plan' ? 'plan' : 'manual', checked: !!i.checked };
+  }
   function normalize(s) {
     const d = defaultState();
-    s = s || {};
+    s = s && typeof s === 'object' ? s : {};
+    const st = s.settings && typeof s.settings === 'object' ? s.settings : {};
+    const overrides = {};
+    if (st.catOverrides && typeof st.catOverrides === 'object') {
+      Object.keys(st.catOverrides).slice(0, 2000).forEach(function (k) { if (CAT[st.catOverrides[k]]) overrides[str(k, 200)] = st.catOverrides[k]; });
+    }
     const out = {
       version: 1,
-      recipes: Array.isArray(s.recipes) ? s.recipes : [],
-      plan: s.plan && typeof s.plan === 'object' ? s.plan : {},
-      shopping: Array.isArray(s.shopping) ? s.shopping : [],
-      settings: Object.assign(d.settings, s.settings || {})
+      recipes: (Array.isArray(s.recipes) ? s.recipes : []).filter(function (r) { return r && typeof r === 'object'; }).map(cleanRecipe),
+      plan: cleanPlan(s.plan),
+      shopping: (Array.isArray(s.shopping) ? s.shopping : []).filter(function (i) { return i && typeof i === 'object' && i.name; }).map(cleanItem),
+      settings: { people: int(st.people, d.settings.people, 1, 20), catOrder: Array.isArray(st.catOrder) ? st.catOrder : d.settings.catOrder,
+        catOverrides: overrides, samplesRemoved: !!st.samplesRemoved }
     };
     const order = (out.settings.catOrder || []).filter(function (id) { return CAT[id]; });
     CATEGORIES.forEach(function (c) { if (order.indexOf(c.id) < 0) order.push(c.id); });
@@ -161,7 +203,7 @@
         h += '<div class="meal"><div class="name"' + (r ? ' data-a="showRecipe" data-id="' + r.id + '"' : '') + '>' + esc(name) + '</div>';
         if (r) {
           h += '<div class="stepper"><button data-a="serv" data-day="' + day + '" data-mid="' + m.id + '" data-d="-1" aria-label="Weniger Portionen">&minus;</button>' +
-            '<span>' + m.servings + ' P.</span>' +
+            '<span>' + Number(m.servings) + ' P.</span>' +
             '<button data-a="serv" data-day="' + day + '" data-mid="' + m.id + '" data-d="1" aria-label="Mehr Portionen">+</button></div>';
         }
         h += '<button class="icon-btn" data-a="delMeal" data-day="' + day + '" data-mid="' + m.id + '" aria-label="Entfernen">&times;</button></div>';
@@ -203,7 +245,7 @@
     return list.map(function (r) {
       return '<div class="card recipe"><button class="star' + (r.fav ? ' on' : '') + '" data-a="fav" data-id="' + r.id + '" aria-label="Favorit">&#9733;</button>' +
         '<div class="body" data-a="showRecipe" data-id="' + r.id + '"><div class="title">' + esc(r.name) + '</div>' +
-        '<div class="muted">' + r.servings + ' Port. &middot; ' + (r.ingredients || []).length + ' Zutaten &middot; ' + lastText(r.id) + '</div>' +
+        '<div class="muted">' + Number(r.servings) + ' Port. &middot; ' + (r.ingredients || []).length + ' Zutaten &middot; ' + lastText(r.id) + '</div>' +
         '<div>' + (r.tags || []).map(function (t) { return '<span class="tag">' + esc(t) + '</span>'; }).join('') + '</div></div></div>';
     }).join('');
   }
@@ -297,7 +339,7 @@
   function showRecipe(id) {
     const r = recipesById()[id];
     if (!r) return;
-    let h = '<div class="muted">' + r.servings + ' Portionen &middot; ' + lastText(r.id) + '</div>' +
+    let h = '<div class="muted">' + Number(r.servings) + ' Portionen &middot; ' + lastText(r.id) + '</div>' +
       '<div style="margin:4px 0 12px">' + (r.tags || []).map(function (t) { return '<span class="tag">' + esc(t) + '</span>'; }).join('') + '</div>' +
       '<h3 style="margin:8px 0">Zutaten</h3><div class="ing-preview">' +
       (r.ingredients || []).map(function (i) {
@@ -305,7 +347,7 @@
         return '<div class="ing"><i class="dot" style="background:' + c.color + '" title="' + esc(c.label) + '"></i><span>' + esc(ingText(i)) + '</span></div>';
       }).join('') + '</div>';
     if (r.notes) h += '<h3 style="margin:8px 0">Zubereitung</h3><div style="white-space:pre-wrap">' + esc(r.notes) + '</div>';
-    if (r.link) h += '<p><a href="' + esc(r.link) + '" target="_blank" rel="noopener">Originalrezept öffnen</a></p>';
+    if (L.safeUrl(r.link)) h += '<p><a href="' + esc(L.safeUrl(r.link)) + '" target="_blank" rel="noopener noreferrer">Originalrezept öffnen</a></p>';
     h += '<div class="btn-row" style="margin-top:16px"><button class="btn primary" data-a="planRecipe" data-id="' + r.id + '">In Wochenplan</button>' +
       '<button class="btn" data-a="editRecipe" data-id="' + r.id + '">Bearbeiten</button>' +
       '<button class="btn" data-a="shareRecipe" data-id="' + r.id + '">Teilen</button>' +
@@ -333,7 +375,7 @@
     (r.ingredients || []).forEach(function (i) { ui.edit.cats[L.mergeKey(i.name)] = i.cat; });
     const tagPool = Array.from(new Set(DEFAULT_TAGS.concat(allTags(), r.tags || [])));
     const h = '<label class="field"><span>Name</span><input type="text" id="edName" value="' + esc(r.name) + '" placeholder="z.B. Spaghetti Bolognese"></label>' +
-      '<label class="field"><span>Rezept ist für so viele Personen</span><input type="number" id="edServ" min="1" max="30" inputmode="numeric" value="' + r.servings + '"></label>' +
+      '<label class="field"><span>Rezept ist für so viele Personen</span><input type="number" id="edServ" min="1" max="30" inputmode="numeric" value="' + Number(r.servings) + '"></label>' +
       '<div class="field"><span class="muted">Stichwörter (für Filter und Vorschläge)</span><div class="chips" id="edTags" style="margin:6px 0">' +
       tagPool.map(function (t) { return '<button class="chip' + (ui.edit.tags.has(t) ? ' on' : '') + '" data-a="edTag" data-tag="' + esc(t) + '">' + esc(t) + '</button>'; }).join('') +
       '</div><div class="row"><input type="text" id="edNewTag" placeholder="Eigenes Stichwort"><button class="btn small" data-a="edAddTag">+</button></div></div>' +
@@ -371,7 +413,8 @@
     r.tags = Array.from(e.tags);
     r.ingredients = ings;
     r.notes = $('#edNotes').value.trim();
-    r.link = $('#edLink').value.trim();
+    r.link = L.safeUrl($('#edLink').value);
+    if ($('#edLink').value.trim() && !r.link) toast('Link ignoriert: nur Adressen mit https:// sind erlaubt');
     if (r.id) {
       state.recipes = state.recipes.map(function (x) { return x.id === r.id ? r : x; });
     } else {
@@ -407,7 +450,7 @@
       '<div class="btn-row"><button class="btn" data-a="export">Backup exportieren</button><button class="btn" data-a="importBtn">Backup importieren</button></div>' +
       '<input type="file" id="importFile" accept="application/json,.json" hidden>' +
       '<div class="btn-row"><button class="btn danger" data-a="wipe">Alle Daten löschen</button></div>' +
-      '<p class="muted">Menüplan Version 1.4 &middot; ' + state.recipes.length + ' Rezepte</p>';
+      '<p class="muted">Menüplan Version 1.5 &middot; ' + state.recipes.length + ' Rezepte</p>';
     openModal('Einstellungen', h);
   }
   function catOrderHtml() {
@@ -472,6 +515,8 @@
   // ---------- Rezept per Foto (Texterkennung Tesseract, läuft auf dem Handy) ----------
   // Ablauf: Foto -> Lage automatisch prüfen -> Rahmen ziehen -> als Titel, Zutaten oder Zubereitung erkennen
   const TESS_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@6.0.1/dist/tesseract.min.js';
+  // Prüfsumme der Datei: ist sie auf dem Server verändert, verweigert der Browser das Laden (geprüft 27.09.2026)
+  const TESS_SRI = 'sha384-r1ru3tcf6FhnCFR4B7pIFG+BhFF9LlFtz/P1y4pblWn3AGs9y3lBx5SKLNf4+rED';
   let tessLoading = null;
   let ocrLog = null;
   function loadTesseract() {
@@ -480,6 +525,8 @@
     tessLoading = new Promise(function (resolve, reject) {
       const sc = document.createElement('script');
       sc.src = TESS_URL;
+      sc.integrity = TESS_SRI;
+      sc.crossOrigin = 'anonymous';
       sc.onload = function () { resolve(window.Tesseract); };
       sc.onerror = function () { tessLoading = null; reject(new Error('laden')); };
       document.head.appendChild(sc);

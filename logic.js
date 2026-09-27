@@ -496,6 +496,12 @@
     return { name: parts.join(' ').replace(/\s+/g, ' ').trim(), servings: servings };
   }
 
+  // Nur echte Web-Adressen zulassen (kein «javascript:», «data:» usw.)
+  function safeUrl(u) {
+    u = String(u || '').trim();
+    return /^https?:\/\/[^\s"'<>]+$/i.test(u) ? u : '';
+  }
+
   function parseRecipeText(text, overrides) {
     const r = { name: '', servings: null, tags: [], ingredientsText: '', notes: '', link: '' };
     const lines = cleanLines(text);
@@ -508,7 +514,7 @@
       if ((m = line.match(/^stichw(?:ö|oe)rter\s*:\s*(.*)$/i))) {
         r.tags = m[1].split(',').map(function (t) { return t.trim(); }).filter(Boolean); return;
       }
-      if ((m = line.match(/^link\s*:\s*(\S+)/i))) { r.link = m[1]; return; }
+      if ((m = line.match(/^link\s*:\s*(\S+)/i))) { r.link = safeUrl(m[1]); return; }
       const sv = line.match(RX_SERVINGS);
       if (RX_ING_HEAD.test(line)) {
         if (sv && !r.servings) r.servings = Number(sv[1] || sv[2]);
@@ -560,7 +566,7 @@
     normName, mergeKey, guessCategory, toBase, fromBase, formatNumber, formatQty, roundForShopping,
     lastUsedMap, suggestRecipes, buildShoppingFromPlan, mergeShopping, groupByCategory,
     itemKey, shoppingToText, parseShoppingText, planToText, recipeToText, parseRecipeText,
-    shortName, cleanIngredientBlock, cleanNotesBlock, cleanTitleBlock
+    shortName, safeUrl, cleanIngredientBlock, cleanNotesBlock, cleanTitleBlock
   };
   if (typeof module !== 'undefined') module.exports = api;
   else root.Logic = api;
